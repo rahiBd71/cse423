@@ -1,0 +1,389 @@
+from OpenGL.GL import *
+from OpenGL.GLUT import *
+from OpenGL.GLU import *
+import math
+import random
+import time
+
+# Game state variables
+game_started = False
+game_paused = False
+game_over = False
+score = 0
+lives = 3
+last_time = time.time()
+delta_time = 0
+
+# Ball properties
+ball_radius = 10
+ball_pos = [0, 0, ball_radius]  # x, y, z
+ball_lane = 1  # 0=left, 1=center, 2=right
+ball_jump_state = 0  # 0=ground, 1=first jump, 2=second jump
+jump_velocity = 0
+gravity = 90.0
+ball_scale = 1.0
+ball_moving = False
+target_x = 0
+lane_switch_speed = 200  # pixels per second
+
+# Camera settings
+camera_pos = [0, -200, 150]
+camera_mode = 0
+camera_angle = 0
+camera_distance = 200
+
+# Game elements
+obstacles = []
+treasures = []
+lanes = [-50, 0, 50]
+lane_width = 40
+game_speed = 120.0  # Forward speed
+
+# Jump visualization
+max_jump_height = 150
+squash_factor = 0.7
+
+# Key states
+key_states = {
+    b'a': False,
+    b'd': False,
+    b' ': False,
+    b's': False,
+    b'q': False,
+    b'p': False,
+    b'r': False,
+    b'm': False
+}
+
+def init_game():
+    global obstacles, treasures, ball_pos, ball_lane, ball_jump_state
+    global jump_velocity, lives, score, game_over, game_paused, last_time, game_started
+
+    ball_pos = [0, 0, ball_radius]
+    ball_lane = 1
+    ball_jump_state = 0
+    jump_velocity = 0
+    ball_scale = 1.0
+    ball_moving = False
+    target_x = lanes[ball_lane]
+
+    lives = 3
+    score = 0
+    game_over = False
+    game_paused = False
+    game_started = False
+    last_time = time.time()
+
+    generate_level()
+
+def generate_level():
+    global obstacles, treasures
+
+    obstacles = []
+    treasures = []
+
+    for i in range(1, 80):
+        obs_type = random.randint(0, 2)
+        obs_lane = random.randint(0, 2)
+        obs_pos = -i * 120
+        height = [20, 40, 60][obs_type]
+        obstacles.append({
+            'pos': [lanes[obs_lane], obs_pos, height / 2],
+            'size': [lane_width - 10, 20, height],
+            'type': obs_type
+        })
+
+    for i in range(20):
+        treasure_lane = random.randint(0, 2)
+        treasure_pos = -random.randint(150, 6000)
+        treasures.append({
+            'pos': [lanes[treasure_lane], treasure_pos, 20],
+            'collected': False
+        })
+
+def draw_text(x, y, text, font=GLUT_BITMAP_HELVETICA_18):
+    glColor3f(1, 1, 1)
+    glMatrixMode(GL_PROJECTION)
+    glPushMatrix()
+    glLoadIdentity()
+    gluOrtho2D(0, 1000, 0, 800)
+    glMatrixMode(GL_MODELVIEW)
+    glPushMatrix()
+    glLoadIdentity()
+    glRasterPos2f(x, y)
+    for ch in text:
+        glutBitmapCharacter(font, ord(ch))
+    glPopMatrix()
+    glMatrixMode(GL_PROJECTION)
+    glPopMatrix()
+    glMatrixMode(GL_MODELVIEW)
+
+def draw_ball():
+    glPushMatrix()
+    glTranslatef(ball_pos[0], ball_pos[1], ball_pos[2])
+
+    # Squash and stretch
+    if ball_jump_state > 0:
+        jump_progress = min(1.0, ball_pos[2] / max_jump_height)
+        if jump_progress > 0.5:
+            squash_amount = squash_factor * (1 - abs(jump_progress - 0.5) * 2)
+            glScalef(1 + squash_amount, 1 + squash_amount, 1 - squash_amount)
+        else:
+            stretch_amount = 0.2 * (1 - abs(jump_progress - 0.5) * 2)
+            glScalef(1 - stretch_amount, 1 - stretch_amount, 1 + stretch_amount)
+    else:
+        glScalef(1, 1, ball_scale)
+
+    glColor3f(0.2, 0.6, 1.0)
+    glutSolidSphere(ball_radius, 20, 20)
+
+    # Shadow
+    glPushMatrix()
+    shadow_scale = 1.0 - (ball_pos[2] / max_jump_height * 0.5)
+    glTranslatef(0, 0, -ball_radius)
+    glScalef(shadow_scale, shadow_scale, 0.1)
+    glColor4f(0, 0, 0, 0.3)
+    glutSolidSphere(ball_radius, 10, 10)
+    glPopMatrix()
+    glPopMatrix()
+
+def draw_road():
+    glBegin(GL_QUADS)
+    glColor3f(0.3, 0.3, 0.3)
+    glVertex3f(-80, 100, 0)
+    glVertex3f(80, 100, 0)
+    glVertex3f(80, -5000, 0)
+    glVertex3f(-80, -5000, 0)
+
+    glColor3f(1, 1, 1)
+    for y in range(0, -5000, -50):
+        glVertex3f(-25, y, 1)
+        glVertex3f(-20, y, 1)
+        glVertex3f(-20, y - 30, 1)
+        glVertex3f(-25, y - 30, 1)
+
+        glVertex3f(20, y, 1)
+        glVertex3f(25, y, 1)
+        glVertex3f(25, y - 30, 1)
+        glVertex3f(20, y - 30, 1)
+    glEnd()
+
+def draw_obstacles():
+    for obstacle in obstacles:
+        glPushMatrix()
+        glTranslatef(*obstacle['pos'])
+        if obstacle['type'] == 0:
+            glColor3f(1, 0, 0)
+        elif obstacle['type'] == 1:
+            glColor3f(1, 1, 0)
+        else:
+            glColor3f(1, 0, 1)
+        glScalef(*obstacle['size'])
+        glutSolidCube(1)
+        glPopMatrix()
+
+def draw_treasures():
+    for treasure in treasures:
+        if not treasure['collected']:
+            glPushMatrix()
+            glTranslatef(*treasure['pos'])
+            glColor3f(1, 1, 0)
+            glutSolidSphere(8, 10, 10)
+            glPopMatrix()
+
+def draw_hud():
+    draw_text(20, 770, f"Score: {score}")
+    draw_text(20, 740, f"Lives: {lives}")
+    if not game_started:
+        draw_text(400, 400, "Press Q to Start")
+    elif game_paused:
+        draw_text(450, 400, "PAUSED")
+    if game_over:
+        draw_text(430, 400, "GAME OVER")
+        draw_text(380, 370, "Press R to restart")
+
+def check_collisions():
+    global lives, score, game_over
+
+    for obstacle in obstacles[:]:
+        if (abs(ball_pos[0] - obstacle['pos'][0]) < (ball_radius + obstacle['size'][0] / 2) and
+            abs(ball_pos[1] - obstacle['pos'][1]) < (ball_radius + obstacle['size'][1] / 2)):
+            if ball_pos[2] < obstacle['pos'][2] + obstacle['size'][2] / 2:
+                lives -= 1
+                if lives <= 0:
+                    game_over = True
+                obstacles.remove(obstacle)
+                continue
+        if obstacle['pos'][1] > ball_pos[1] + 50:
+            score += 15
+            obstacles.remove(obstacle)
+
+    for treasure in treasures:
+        if not treasure['collected']:
+            dx = ball_pos[0] - treasure['pos'][0]
+            dy = ball_pos[1] - treasure['pos'][1]
+            dz = ball_pos[2] - treasure['pos'][2]
+            if math.sqrt(dx ** 2 + dy ** 2 + dz ** 2) < ball_radius + 8:
+                treasure['collected'] = True
+                score += 75
+
+def update_ball():
+    global ball_pos, jump_velocity, ball_jump_state, ball_moving, ball_scale
+
+    if key_states[b'a'] and ball_lane > 0 and not ball_moving:
+        change_lane(-1)
+    if key_states[b'd'] and ball_lane < 2 and not ball_moving:
+        change_lane(1)
+
+    if ball_moving:
+        move_speed = lane_switch_speed * delta_time
+        direction = 1 if ball_pos[0] < target_x else -1
+        ball_pos[0] += direction * move_speed
+        if abs(ball_pos[0] - target_x) < 1:
+            ball_pos[0] = target_x
+            ball_moving = False
+
+    if key_states[b' ']:
+        if ball_jump_state == 0:
+            ball_jump_state = 1
+            jump_velocity = 40.0
+        elif ball_jump_state == 1 and jump_velocity < 0:
+            ball_jump_state = 2
+            jump_velocity = 30.0
+        key_states[b' '] = False
+
+    if ball_jump_state > 0:
+        ball_pos[2] += jump_velocity * delta_time
+        jump_velocity -= gravity * delta_time
+        if ball_pos[2] <= ball_radius:
+            ball_pos[2] = ball_radius
+            ball_jump_state = 0
+            jump_velocity = 0
+            ball_scale = 0.8
+
+    if key_states[b's']:
+        ball_scale = 0.5
+    elif ball_scale < 1.0:
+        ball_scale += 0.05
+
+    if game_started and not game_paused and not game_over:
+        ball_pos[1] -= game_speed * delta_time
+
+def change_lane(direction):
+    global ball_lane, target_x, ball_moving
+    ball_lane += direction
+    target_x = lanes[ball_lane]
+    ball_moving = True
+
+def keyboardListener(key, x, y):
+    global game_paused, game_over, camera_mode, game_started, jump_velocity, ball_jump_state
+
+    key = key.lower()
+    if key == b'q' and not game_started:
+        game_started = True
+    elif key == b'p':
+        game_paused = not game_paused
+    elif key == b'r' and game_over:
+        init_game()
+    elif key == b'm':
+        camera_mode = 1 - camera_mode
+
+    if key in key_states:
+        key_states[key] = True
+
+def keyboardUpListener(key, x, y):
+    key = key.lower()
+    if key in key_states:
+        key_states[key] = False
+
+def specialKeyListener(key, x, y):
+    global camera_angle, camera_distance
+    if key == GLUT_KEY_LEFT:
+        camera_angle -= 5
+    elif key == GLUT_KEY_RIGHT:
+        camera_angle += 5
+    elif key == GLUT_KEY_UP:
+        camera_distance = max(100, camera_distance - 10)
+    elif key == GLUT_KEY_DOWN:
+        camera_distance = min(400, camera_distance + 10)
+
+def mouseListener(button, state, x, y):
+    global game_paused, camera_mode
+    if button == GLUT_LEFT_BUTTON and state == GLUT_DOWN:
+        game_paused = not game_paused
+    elif button == GLUT_RIGHT_BUTTON and state == GLUT_DOWN:
+        camera_mode = 1 - camera_mode
+
+def setupCamera():
+    glMatrixMode(GL_PROJECTION)
+    glLoadIdentity()
+    gluPerspective(60, 1.25, 0.1, 3000)
+    glMatrixMode(GL_MODELVIEW)
+    glLoadIdentity()
+
+    if camera_mode == 0:
+        cam_x = camera_distance * math.sin(math.radians(camera_angle))
+        cam_z = camera_distance * math.cos(math.radians(camera_angle)) + ball_pos[2] * 0.5
+        gluLookAt(ball_pos[0] + cam_x, ball_pos[1] - 100, ball_pos[2] + cam_z,
+                  ball_pos[0], ball_pos[1] - 50, ball_pos[2], 0, 0, 1)
+    else:
+        gluLookAt(ball_pos[0], ball_pos[1] - 50, 200 + ball_pos[2],
+                  ball_pos[0], ball_pos[1] - 100, 0, 0, 1, 0)
+
+def idle():
+    global delta_time, last_time
+    current_time = time.time()
+    delta_time = current_time - last_time
+    last_time = current_time
+
+    if game_started and not game_paused and not game_over:
+        update_ball()
+        check_collisions()
+
+    glutPostRedisplay()
+
+def showScreen():
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+    glLoadIdentity()
+    glViewport(0, 0, 1000, 800)
+    setupCamera()
+    draw_road()
+    draw_obstacles()
+    draw_treasures()
+    draw_ball()
+
+    glMatrixMode(GL_PROJECTION)
+    glPushMatrix()
+    glLoadIdentity()
+    gluOrtho2D(0, 1000, 0, 800)
+    glMatrixMode(GL_MODELVIEW)
+    glPushMatrix()
+    glLoadIdentity()
+    draw_hud()
+    glPopMatrix()
+    glMatrixMode(GL_PROJECTION)
+    glPopMatrix()
+    glMatrixMode(GL_MODELVIEW)
+    glutSwapBuffers()
+
+def main():
+    glutInit()
+    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH)
+    glutInitWindowSize(1000, 800)
+    glutInitWindowPosition(100, 100)
+    glutCreateWindow(b"3D Ball Lane Game")
+
+    glEnable(GL_DEPTH_TEST)
+    init_game()
+
+    glutDisplayFunc(showScreen)
+    glutKeyboardFunc(keyboardListener)
+    glutKeyboardUpFunc(keyboardUpListener)
+    glutSpecialFunc(specialKeyListener)
+    glutMouseFunc(mouseListener)
+    glutIdleFunc(idle)
+
+    glutMainLoop()
+
+if __name__ == "__main__":
+    main()
